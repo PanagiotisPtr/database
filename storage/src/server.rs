@@ -1,0 +1,43 @@
+use std::{
+    io::{prelude::*, BufReader},
+    net::{TcpListener, TcpStream},
+};
+
+pub struct Server {
+    listener: TcpListener,
+}
+
+enum Operation {
+    PING = 0,
+    GET = 1,
+    SET = 2,
+    DEL = 3,
+    SCAN = 4,
+}
+
+impl Server {
+    pub fn new(port: &str) -> Self {
+        Server {
+            listener: TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap(),
+        }
+    }
+
+    pub fn listen(&self) {
+        for stream in self.listener.incoming() {
+            let stream = stream.unwrap();
+
+            self.handle_connection(stream);
+        }
+    }
+
+    fn handle_connection(&self, mut stream: TcpStream) {
+        let buf_reader = BufReader::new(&mut stream);
+        let http_request: Vec<_> = buf_reader
+            .lines()
+            .map(|result| result.unwrap())
+            .take_while(|line| !line.is_empty())
+            .collect();
+
+        println!("Request: {:#?}", http_request);
+    }
+}
