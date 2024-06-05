@@ -1,43 +1,74 @@
 use std::{
-    io::{prelude::*, BufReader},
+    io::prelude::*,
     net::{TcpListener, TcpStream},
 };
 
-pub struct Server {
-    listener: TcpListener,
-}
+use crate::database::memtable::Memtable;
 
-enum Operation {
-    PING = 0,
-    GET = 1,
-    SET = 2,
-    DEL = 3,
-    SCAN = 4,
+pub struct Server {
+    storage: Memtable,
 }
 
 impl Server {
-    pub fn new(port: &str) -> Self {
+    pub fn new() -> Self {
         Server {
-            listener: TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap(),
+            storage: Memtable::new().unwrap(),
         }
     }
 
-    pub fn listen(&self) {
-        for stream in self.listener.incoming() {
+    pub fn listen(&mut self, port: &str) {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
+        for stream in listener.incoming() {
             let stream = stream.unwrap();
 
             self.handle_connection(stream);
         }
     }
 
-    fn handle_connection(&self, mut stream: TcpStream) {
-        let buf_reader = BufReader::new(&mut stream);
-        let http_request: Vec<_> = buf_reader
-            .lines()
-            .map(|result| result.unwrap())
-            .take_while(|line| !line.is_empty())
-            .collect();
-
-        println!("Request: {:#?}", http_request);
+    fn handle_connection(&mut self, mut stream: TcpStream) {
+        loop {
+            let buf = &mut [0u8];
+            let mut data: Vec<u8> = vec![];
+            loop {
+                match stream.read_exact(buf) {
+                    Ok(_) => {
+                        if char::from(*buf.get(0).unwrap()) == '\n' {
+                            break;
+                        }
+                        data.push(*buf.get(0).unwrap())
+                    }
+                    Err(e) => {
+                        println!("error: {}", e);
+                        break;
+                    }
+                }
+            }
+            if data.len() == 0 {
+                break;
+            }
+            let line = String::from_utf8(data).unwrap();
+            let parts: Vec<&str> = line.split(" ").collect();
+            match parts.get(0).unwrap().to_uppercase().as_str() {
+                "EXIT" => break,
+                "PING" => stream.write_all("PONG".as_bytes()).unwrap(),
+                "GET" => match self.storage.get(&String::from(*parts.get(1).unwrap())) {
+                    Some(v) => stream.write_all(v.as_bytes()).unwrap(),
+                    None => stream.write_all("NULL".as_bytes()).unwrap(),
+                },
+                "SET" => match self.storage.set(
+                    String::from(*parts.get(1).unwrap()),
+                    String::from(*parts.get(2).unwrap()),
+                ) {
+                    Ok(_) => stream.write_all("OK".as_bytes()).unwrap(),
+                    Err(_) => stream.write_all("ERROR".as_bytes()).unwrap(),
+                },
+                "DEL" => match self.storage.del(String::from(*parts.get(1).unwrap())) {
+                    Ok(_) => stream.write_all("OK".as_bytes()).unwrap(),
+                    Err(_) => stream.write_all("ERROR".as_bytes()).unwrap(),
+                },
+                _ => stream.write_all("invalid input".as_bytes()).unwrap(),
+            };
+            stream.write_all("\n".as_bytes()).unwrap();
+        }
     }
 }

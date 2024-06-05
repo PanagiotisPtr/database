@@ -4,7 +4,7 @@ mod database;
 mod server;
 
 fn main() {
-    let server = Server::new("8080");
+    let mut server = Server::new();
 
-    server.listen();
+    server.listen("8080");
 }
