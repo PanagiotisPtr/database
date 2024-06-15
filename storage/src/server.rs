@@ -21,11 +21,11 @@ impl Server {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
 
-            self.handle_connection(stream);
+            self.handle_connection_old(stream);
         }
     }
 
-    fn handle_connection(&mut self, mut stream: TcpStream) {
+    fn handle_connection_old(&mut self, mut stream: TcpStream) {
         loop {
             let buf = &mut [0u8];
             let mut data: Vec<u8> = vec![];
