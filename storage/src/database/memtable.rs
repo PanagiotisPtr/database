@@ -10,36 +10,43 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Result;
+use commons::{
+    command::Command,
+    messages::{GetRequest, GetResponse, KeyType, SetRequest, SetResponse},
+    operations::Operation,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
 const LOG_LOCATION_ENV_VAR: &str = "LOG_DIR";
 const LOG_LOCATION_DEFAULT: &str = "./logs";
 
 const DATA_LOCATION_ENV_VAR: &str = "DATA_DIR";
 const DATA_LOCATION_DEFAULT: &str = "./data";
 
-enum Operation<'a> {
-    Set(&'a String, &'a String),
-    Del(&'a String),
+#[derive(Serialize, Deserialize, Debug)]
+struct Log {
+    operation: Operation,
+    message: Vec<u8>,
 }
 
-impl<'a> ToString for Operation<'a> {
-    fn to_string(&self) -> String {
-        match &self {
-            Self::Set(key, value) => format!("SET {} {}\n", key, value),
-            Self::Del(key) => format!("DEL {}\n", key),
-        }
-    }
+#[derive(Serialize, Deserialize, Debug)]
+struct Segment<V>
+where
+    V: Serialize,
+{
+    data: BTreeMap<KeyType, V>,
 }
 
-struct Segment {
-    data: BTreeMap<String, String>,
-}
-
-impl Segment {
-    fn get(&self, key: &String) -> Option<&String> {
+impl<V> Segment<V>
+where
+    V: Serialize,
+{
+    fn get(&self, key: &KeyType) -> Option<&V> {
         self.data.get(key)
     }
 
-    fn set(&mut self, key: String, value: String) {
+    fn set(&mut self, key: KeyType, value: V) {
         self.data.insert(key, value);
     }
 
@@ -61,18 +68,33 @@ impl fmt::Display for InvalidReadError {
     }
 }
 
-pub struct Memtable {
-    segments: Vec<Segment>,
+pub struct Memtable<V>
+where
+    V: Serialize,
+{
+    segments: Vec<Segment<V>>,
     log: File,
 }
 
-impl Memtable {
-    fn commit(&mut self, operation: Operation) -> Result<(), Box<dyn Error>> {
-        self.log.write_all(operation.to_string().as_bytes())?;
+impl<V> Memtable<V>
+where
+    V: Serialize,
+{
+    fn commit<M>(&mut self, operation: Operation, message: M) -> Result<()>
+    where
+        M: Serialize,
+    {
+        bincode::serialize_into(
+            &mut self.log,
+            &Log {
+                operation,
+                message: bincode::serialize(&message)?,
+            },
+        )?;
         Ok(())
     }
 
-    fn get_last_segment(&mut self) -> &mut Segment {
+    fn get_last_segment(&mut self) -> &mut Segment<V> {
         if self.segments.len() == 0 {
             self.segments.push(Segment {
                 data: BTreeMap::new(),
@@ -81,7 +103,7 @@ impl Memtable {
         self.segments.last_mut().unwrap()
     }
 
-    fn get_segment_file(&self) -> Result<File, Box<dyn Error>> {
+    fn get_segment_file(&self) -> Result<File> {
         let data_location = match env::var(DATA_LOCATION_ENV_VAR) {
             Ok(v) => v,
             Err(_) => String::from(DATA_LOCATION_DEFAULT),
@@ -101,27 +123,16 @@ impl Memtable {
         Ok(file)
     }
 
-    fn persist_segment(&self, segment_id: usize) -> Result<(), Box<dyn Error>> {
+    fn persist_segment(&self, segment_id: usize) -> Result<()> {
         let segment = self.segments.get(segment_id).unwrap();
-        let size_bytes = mem::size_of::<usize>();
         let mut file = self.get_segment_file()?;
-        for (key, value) in &segment.data {
-            let key_bytes = key.as_bytes();
-            let value_bytes = value.as_bytes();
-            let mut buffer: Vec<u8> =
-                Vec::with_capacity(key_bytes.len() + value_bytes.len() + size_bytes * 2);
-            buffer.extend_from_slice(&key_bytes.len().to_le_bytes());
-            buffer.extend_from_slice(key_bytes);
-            buffer.extend_from_slice(&value_bytes.len().to_le_bytes());
-            buffer.extend_from_slice(value_bytes);
-            file.write_all(&buffer)?;
-        }
+        bincode::serialize_into(&mut file, &segment)?;
         file.flush()?;
 
         Ok(())
     }
 
-    pub fn get(&self, key: &String) -> Option<&String> {
+    fn get(&self, key: &KeyType) -> Option<&V> {
         for segment in self.segments.iter().rev() {
             if let Some(v) = segment.get(key) {
                 return Some(v);
@@ -130,8 +141,7 @@ impl Memtable {
         None
     }
 
-    pub fn set(&mut self, key: String, value: String) -> Result<(), Box<dyn Error>> {
-        self.commit(Operation::Set(&key, &value))?;
+    fn set(&mut self, key: K, value: V) -> Result<(), Box<dyn Error>> {
         self.get_last_segment().set(key, value);
         if self.get_last_segment().data.len() >= 5 {
             self.segments.push(Segment {
@@ -143,7 +153,6 @@ impl Memtable {
     }
 
     pub fn del(&mut self, key: String) -> Result<(), Box<dyn Error>> {
-        self.commit(Operation::Del(&key))?;
         self.get_last_segment().set(key, "NULL".to_string());
         Ok(())
     }
@@ -271,5 +280,28 @@ impl Memtable {
         table.segments = table.load_segments()?;
 
         Ok(table)
+    }
+}
+
+impl<V> Command<GetRequest, GetResponse<V>> for Memtable<V>
+where
+    V: Serialize + DeserializeOwned + Clone,
+{
+    fn send(&mut self, request: GetRequest) -> Result<GetResponse<V>> {
+        return Ok(GetResponse {
+            value: self.get(&request.key).cloned(),
+        });
+    }
+}
+
+impl<V> Command<SetRequest<V>, SetResponse> for Memtable<V>
+where
+    V: Serialize + DeserializeOwned + Clone,
+{
+    fn send(&mut self, request: SetRequest<V>) -> Result<SetResponse> {
+        self.commit(Operation::SET, request)?;
+        self.set(request.key, request.value)?;
+
+        return Ok(SetResponse {});
     }
 }

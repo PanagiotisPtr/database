@@ -1,5 +1,7 @@
+pub mod command;
 pub mod messages;
 pub mod operations;
+pub mod transport;
 pub mod versions;
 
 pub fn add(left: usize, right: usize) -> usize {

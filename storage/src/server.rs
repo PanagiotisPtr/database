@@ -3,15 +3,25 @@ use std::{
     net::{TcpListener, TcpStream},
 };
 
+use anyhow::Result;
+use commons::{
+    messages::{GetRequest, GetResponse},
+    operations::Operation,
+    transport::Message,
+    versions::Version,
+};
+
 use crate::database::memtable::Memtable;
 
 pub struct Server {
+    version: Version,
     storage: Memtable,
 }
 
 impl Server {
     pub fn new() -> Self {
         Server {
+            version: Version::V0,
             storage: Memtable::new().unwrap(),
         }
     }
@@ -23,6 +33,30 @@ impl Server {
 
             self.handle_connection_old(stream);
         }
+    }
+
+    fn handle_get(&mut self, content: Vec<u8>) -> Result<GetResponse<Vec<u8>>> {
+        let request: GetRequest = bincode::deserialize(&content)?;
+        Ok(GetResponse {
+            value: vec![0u8; 1],
+        })
+    }
+
+    fn handle_connection(&mut self, mut stream: TcpStream) -> Result<()> {
+        loop {
+            let message = Message::read_from(&mut stream)?;
+            if message.headers.version != self.version {
+                continue;
+            }
+            match message.headers.operation {
+                Operation::GET => {}
+                Operation::SET => {}
+                Operation::EXIT => break,
+                _ => continue,
+            };
+        }
+
+        Ok(())
     }
 
     fn handle_connection_old(&mut self, mut stream: TcpStream) {
