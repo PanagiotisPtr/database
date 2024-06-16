@@ -43,7 +43,10 @@ impl Client {
         Ok(message.headers.id)
     }
 
-    fn get_message(&mut self, id: u32, operation: Operation) -> Result<Vec<u8>> {
+    fn get_message<M>(&mut self, id: u32, operation: Operation) -> Result<M>
+    where
+        M: DeserializeOwned,
+    {
         let message: Message = bincode::deserialize_from(&mut self.stream)?;
         if message.headers.version != self.version {
             return Err(anyhow::format_err!("mismatched versions"));
@@ -57,22 +60,21 @@ impl Client {
             return Err(anyhow::format_err!("mismatched operation"));
         }
 
-        Ok(message.content)
+        Ok(bincode::deserialize(&message.content)?)
     }
 }
 
 impl<V> Command<GetRequest, GetResponse<V>> for Client
 where
-    V: Serialize + DeserializeOwned,
+    V: Serialize + DeserializeOwned + Clone,
 {
     fn send(&mut self, request: GetRequest) -> Result<GetResponse<V>> {
         let id = self.put_message(Operation::GET, &bincode::serialize(&request)?)?;
-        let response_bytes = self.get_message(id, Operation::GET)?;
+        let raw_response: GetResponse<Vec<u8>> = self.get_message(id, Operation::GET)?;
 
-        let raw_response: GetResponse<Vec<u8>> = bincode::deserialize(&response_bytes)?;
         match raw_response.value {
             Some(v) => Ok(GetResponse {
-                value: bincode::deserialize(&v)?,
+                value: Some(bincode::deserialize(&v)?),
             }),
             None => Ok(GetResponse { value: None }),
         }
@@ -84,11 +86,14 @@ where
     V: Serialize + Clone,
 {
     fn send(&mut self, request: SetRequest<V>) -> Result<SetResponse> {
-        let id = self.put_message(Operation::SET, &bincode::serialize(&request)?)?;
-        let response_bytes = self.get_message(id, Operation::SET)?;
-
-        // check that we got a valid response
-        bincode::deserialize::<SetResponse>(&response_bytes)?;
+        let id = self.put_message(
+            Operation::SET,
+            &bincode::serialize(&SetRequest::<Vec<u8>> {
+                key: request.key,
+                value: bincode::serialize(&request.value)?,
+            })?,
+        )?;
+        self.get_message::<SetResponse>(id, Operation::SET)?;
 
         return Ok(SetResponse {});
     }

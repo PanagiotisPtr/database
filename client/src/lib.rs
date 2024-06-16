@@ -15,12 +15,15 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let mut c = Client::new("localhost:8080").unwrap();
+        println!("will connect");
+        let mut c = Client::new("127.0.0.1:8080").unwrap();
+        println!("connected");
         let set_request = SetRequest {
             key: KeyType::Str("hello".to_string()),
             value: String::from("world"),
         };
 
+        println!("sending set requests");
         let set_response: SetResponse = c.send(set_request).unwrap();
         println!("set_response: {:#?}", set_response);
 
@@ -28,6 +31,7 @@ mod tests {
             key: KeyType::Str("hello".to_string()),
         };
 
+        println!("sending get requests");
         let get_response: GetResponse<String> = c.send(get_request).unwrap();
         println!("get_response: {:#?}", get_response);
     }

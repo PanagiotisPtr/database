@@ -1,17 +1,15 @@
-use std::{
-    io::prelude::*,
-    net::{TcpListener, TcpStream},
-};
+use std::net::{TcpListener, TcpStream};
 
 use anyhow::Result;
 use commons::{
-    messages::{GetRequest, GetResponse},
+    messages::{GetRequest, GetResponse, KeyType, SetRequest, SetResponse},
     operations::Operation,
     transport::Message,
     versions::Version,
 };
 
 use crate::database::memtable::Memtable;
+use commons::command::Command;
 
 pub struct Server {
     version: Version,
@@ -31,78 +29,52 @@ impl Server {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
 
-            self.handle_connection_old(stream);
+            self.handle_connection(stream).unwrap();
         }
     }
 
     fn handle_get(&mut self, content: Vec<u8>) -> Result<GetResponse<Vec<u8>>> {
         let request: GetRequest = bincode::deserialize(&content)?;
-        Ok(GetResponse {
-            value: vec![0u8; 1],
-        })
+        self.storage.send(request)
+    }
+
+    fn handle_set(&mut self, content: Vec<u8>) -> Result<SetResponse> {
+        let request: SetRequest<Vec<u8>> = bincode::deserialize(&content)?;
+        self.storage.send(request)
     }
 
     fn handle_connection(&mut self, mut stream: TcpStream) -> Result<()> {
         loop {
-            let message = Message::read_from(&mut stream)?;
+            let message: Message = bincode::deserialize_from(&mut stream)?;
             if message.headers.version != self.version {
                 continue;
             }
             match message.headers.operation {
-                Operation::GET => {}
-                Operation::SET => {}
+                Operation::GET => {
+                    let result = self.handle_get(message.content)?;
+                    bincode::serialize_into(
+                        &mut stream,
+                        &Message {
+                            headers: message.headers,
+                            content: bincode::serialize(&result)?,
+                        },
+                    )?;
+                }
+                Operation::SET => {
+                    let result = self.handle_set(message.content)?;
+                    bincode::serialize_into(
+                        &mut stream,
+                        &Message {
+                            headers: message.headers,
+                            content: bincode::serialize(&result)?,
+                        },
+                    )?;
+                }
                 Operation::EXIT => break,
                 _ => continue,
             };
         }
 
         Ok(())
-    }
-
-    fn handle_connection_old(&mut self, mut stream: TcpStream) {
-        loop {
-            let buf = &mut [0u8];
-            let mut data: Vec<u8> = vec![];
-            loop {
-                match stream.read_exact(buf) {
-                    Ok(_) => {
-                        if char::from(*buf.get(0).unwrap()) == '\n' {
-                            break;
-                        }
-                        data.push(*buf.get(0).unwrap())
-                    }
-                    Err(e) => {
-                        println!("error: {}", e);
-                        break;
-                    }
-                }
-            }
-            if data.len() == 0 {
-                break;
-            }
-            let line = String::from_utf8(data).unwrap();
-            let parts: Vec<&str> = line.split(" ").collect();
-            match parts.get(0).unwrap().to_uppercase().as_str() {
-                "EXIT" => break,
-                "PING" => stream.write_all("PONG".as_bytes()).unwrap(),
-                "GET" => match self.storage.get(&String::from(*parts.get(1).unwrap())) {
-                    Some(v) => stream.write_all(v.as_bytes()).unwrap(),
-                    None => stream.write_all("NULL".as_bytes()).unwrap(),
-                },
-                "SET" => match self.storage.set(
-                    String::from(*parts.get(1).unwrap()),
-                    String::from(*parts.get(2).unwrap()),
-                ) {
-                    Ok(_) => stream.write_all("OK".as_bytes()).unwrap(),
-                    Err(_) => stream.write_all("ERROR".as_bytes()).unwrap(),
-                },
-                "DEL" => match self.storage.del(String::from(*parts.get(1).unwrap())) {
-                    Ok(_) => stream.write_all("OK".as_bytes()).unwrap(),
-                    Err(_) => stream.write_all("ERROR".as_bytes()).unwrap(),
-                },
-                _ => stream.write_all("invalid input".as_bytes()).unwrap(),
-            };
-            stream.write_all("\n".as_bytes()).unwrap();
-        }
     }
 }

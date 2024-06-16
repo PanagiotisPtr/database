@@ -1,5 +1,4 @@
 use crate::{operations::Operation, versions::Version};
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
