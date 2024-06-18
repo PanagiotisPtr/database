@@ -8,12 +8,15 @@ use std::{
 };
 
 use anyhow::Result;
+use bytes::Bytes;
 use commons::{
     command::Command,
-    messages::{GetRequest, GetResponse, KeyType, SetRequest, SetResponse},
+    messages::{
+        DelRequest, DelResponse, GetRequest, GetResponse, KeyType, SetRequest, SetResponse,
+    },
     operations::Operation,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 const LOG_LOCATION_ENV_VAR: &str = "LOG_DIR";
 const LOG_LOCATION_DEFAULT: &str = "./logs";
@@ -21,23 +24,31 @@ const LOG_LOCATION_DEFAULT: &str = "./logs";
 const DATA_LOCATION_ENV_VAR: &str = "DATA_DIR";
 const DATA_LOCATION_DEFAULT: &str = "./data";
 
+const MAX_PAGE_SIZE_BYTES: usize = 1_000_000; // 1MB
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Log {
     operation: Operation,
-    message: Vec<u8>,
+    message: Bytes,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Segment {
-    data: BTreeMap<KeyType, Vec<u8>>,
+    data: BTreeMap<KeyType, Option<Bytes>>,
 }
 
 impl Segment {
-    fn get(&self, key: &KeyType) -> Option<&Vec<u8>> {
-        self.data.get(key)
+    fn get(&self, key: &KeyType) -> Option<Bytes> {
+        match self.data.get(key) {
+            Some(v) => match v {
+                Some(vv) => Some(vv.clone()),
+                None => None,
+            },
+            None => None,
+        }
     }
 
-    fn set(&mut self, key: KeyType, value: Vec<u8>) {
+    fn set(&mut self, key: KeyType, value: Option<Bytes>) {
         self.data.insert(key, value);
     }
 }
@@ -56,7 +67,7 @@ impl Memtable {
             &mut self.log,
             &Log {
                 operation,
-                message: bincode::serialize(&message)?,
+                message: bincode::serialize(&message)?.into(),
             },
         )?;
         Ok(())
@@ -100,7 +111,7 @@ impl Memtable {
         Ok(())
     }
 
-    fn get(&self, key: &KeyType) -> Option<&Vec<u8>> {
+    fn get(&self, key: &KeyType) -> Option<Bytes> {
         for segment in self.segments.iter().rev() {
             if let Some(v) = segment.get(key) {
                 return Some(v);
@@ -109,7 +120,7 @@ impl Memtable {
         None
     }
 
-    fn set(&mut self, key: KeyType, value: Vec<u8>) -> Result<()> {
+    fn set(&mut self, key: KeyType, value: Option<Bytes>) -> Result<()> {
         self.get_last_segment().set(key, value);
         if self.get_last_segment().data.len() >= 5 {
             self.segments.push(Segment {
@@ -146,19 +157,28 @@ impl Memtable {
     }
 }
 
-impl Command<GetRequest, GetResponse<Vec<u8>>> for Memtable {
-    fn send(&mut self, request: GetRequest) -> Result<GetResponse<Vec<u8>>> {
+impl Command<GetRequest, GetResponse<Bytes>> for Memtable {
+    fn send(&mut self, request: GetRequest) -> Result<GetResponse<Bytes>> {
         Ok(GetResponse {
-            value: self.get(&request.key).cloned(),
+            value: self.get(&request.key),
         })
     }
 }
 
-impl Command<SetRequest<Vec<u8>>, SetResponse> for Memtable {
-    fn send(&mut self, request: SetRequest<Vec<u8>>) -> Result<SetResponse> {
+impl Command<SetRequest<Bytes>, SetResponse> for Memtable {
+    fn send(&mut self, request: SetRequest<Bytes>) -> Result<SetResponse> {
         self.commit(Operation::SET, &request)?;
-        self.set(request.key, request.value)?;
+        self.set(request.key, Some(request.value))?;
 
         return Ok(SetResponse {});
+    }
+}
+
+impl Command<DelRequest, DelResponse> for Memtable {
+    fn send(&mut self, request: DelRequest) -> Result<DelResponse> {
+        self.commit(Operation::DEL, &request)?;
+        self.set(request.key, None)?;
+
+        return Ok(DelResponse {});
     }
 }

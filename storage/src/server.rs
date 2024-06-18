@@ -1,14 +1,20 @@
-use std::net::{TcpListener, TcpStream};
+use std::{
+    io,
+    net::{Shutdown, TcpListener, TcpStream},
+};
 
 use anyhow::Result;
 use commons::{
-    messages::{GetRequest, GetResponse, KeyType, SetRequest, SetResponse},
+    messages::{
+        DelResponse, ExitRequest, ExitResponse, GetResponse, PingRequest, PingResponse, SetResponse,
+    },
     operations::Operation,
     transport::Message,
     versions::Version,
 };
 
 use crate::database::memtable::Memtable;
+use bytes::Bytes;
 use commons::command::Command;
 
 pub struct Server {
@@ -29,18 +35,38 @@ impl Server {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
 
-            self.handle_connection(stream).unwrap();
+            match self.handle_connection(stream) {
+                Ok(_) => continue,
+                Err(e) => {
+                    eprintln!("failed to close TcpStream: {}", e)
+                }
+            }
         }
     }
 
-    fn handle_get(&mut self, content: Vec<u8>) -> Result<GetResponse<Vec<u8>>> {
-        let request: GetRequest = bincode::deserialize(&content)?;
+    fn handle_get(&mut self, content: Bytes) -> Result<GetResponse<Bytes>> {
+        let request = bincode::deserialize(&content)?;
         self.storage.send(request)
     }
 
-    fn handle_set(&mut self, content: Vec<u8>) -> Result<SetResponse> {
-        let request: SetRequest<Vec<u8>> = bincode::deserialize(&content)?;
+    fn handle_set(&mut self, content: Bytes) -> Result<SetResponse> {
+        let request = bincode::deserialize(&content)?;
         self.storage.send(request)
+    }
+
+    fn handle_del(&mut self, content: Bytes) -> Result<DelResponse> {
+        let request = bincode::deserialize(&content)?;
+        self.storage.send(request)
+    }
+
+    fn handle_ping(&mut self, content: Bytes) -> Result<PingResponse> {
+        bincode::deserialize::<PingRequest>(&content)?;
+        Ok(PingResponse {})
+    }
+
+    fn handle_exit(&mut self, content: Bytes) -> Result<ExitResponse> {
+        bincode::deserialize::<ExitRequest>(&content)?;
+        Ok(ExitResponse {})
     }
 
     fn handle_connection(&mut self, mut stream: TcpStream) -> Result<()> {
@@ -56,7 +82,7 @@ impl Server {
                         &mut stream,
                         &Message {
                             headers: message.headers,
-                            content: bincode::serialize(&result)?,
+                            content: bincode::serialize(&result)?.into(),
                         },
                     )?;
                 }
@@ -66,15 +92,53 @@ impl Server {
                         &mut stream,
                         &Message {
                             headers: message.headers,
-                            content: bincode::serialize(&result)?,
+                            content: bincode::serialize(&result)?.into(),
                         },
                     )?;
                 }
-                Operation::EXIT => break,
-                _ => continue,
+                Operation::DEL => {
+                    let result = self.handle_del(message.content)?;
+                    bincode::serialize_into(
+                        &mut stream,
+                        &Message {
+                            headers: message.headers,
+                            content: bincode::serialize(&result)?.into(),
+                        },
+                    )?;
+                }
+                Operation::PING => {
+                    let result = self.handle_ping(message.content)?;
+                    bincode::serialize_into(
+                        &mut stream,
+                        &Message {
+                            headers: message.headers,
+                            content: bincode::serialize(&result)?.into(),
+                        },
+                    )?;
+                }
+                Operation::EXIT => {
+                    let result = self.handle_exit(message.content)?;
+                    bincode::serialize_into(
+                        &mut stream,
+                        &Message {
+                            headers: message.headers,
+                            content: bincode::serialize(&result)?.into(),
+                        },
+                    )?;
+                    break;
+                }
             };
         }
 
-        Ok(())
+        match stream.shutdown(Shutdown::Both) {
+            Ok(_) => Ok(()),
+            Err(ref e) => {
+                if e.kind() == io::ErrorKind::NotConnected {
+                    Ok(())
+                } else {
+                    Err(anyhow::format_err!("failed to close TcpStream: {}", e))
+                }
+            }
+        }
     }
 }

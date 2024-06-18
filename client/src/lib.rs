@@ -9,30 +9,51 @@ mod comms;
 mod tests {
     use client::Client;
     use commons::command::Command;
-    use commons::messages::{GetRequest, GetResponse, KeyType, SetRequest, SetResponse};
+    use commons::messages::{
+        DelRequest, DelResponse, ExitRequest, ExitResponse, GetRequest, GetResponse, KeyType,
+        PingRequest, PingResponse, SetRequest, SetResponse,
+    };
 
     use super::*;
 
     #[test]
     fn it_works() {
-        println!("will connect");
         let mut c = Client::new("127.0.0.1:8080").unwrap();
-        println!("connected");
-        let set_request = SetRequest {
-            key: KeyType::Str("hello".to_string()),
-            value: String::from("world"),
-        };
+        let key = KeyType::Str("hello".to_string());
+        let value = String::from("world");
 
-        println!("sending set requests");
-        let set_response: SetResponse = c.send(set_request).unwrap();
-        println!("set_response: {:#?}", set_response);
+        println!("hello");
+        let set_response = c
+            .send(SetRequest {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .unwrap();
+        assert_eq!(set_response, SetResponse {});
 
-        let get_request = GetRequest {
-            key: KeyType::Str("hello".to_string()),
-        };
+        println!("hello");
+        let mut get_response: GetResponse<String> =
+            c.send(GetRequest { key: key.clone() }).unwrap();
+        assert_eq!(get_response, GetResponse { value: Some(value) });
 
-        println!("sending get requests");
-        let get_response: GetResponse<String> = c.send(get_request).unwrap();
-        println!("get_response: {:#?}", get_response);
+        println!("hello");
+        let del_response = c.send(DelRequest { key: key.clone() }).unwrap();
+        assert_eq!(del_response, DelResponse {});
+
+        println!("hello");
+        get_response = c.send(GetRequest { key: key.clone() }).unwrap();
+        assert_eq!(get_response, GetResponse { value: None });
+
+        println!("hello");
+        get_response = c.send(GetRequest { key: key.clone() }).unwrap();
+        assert_eq!(get_response, GetResponse { value: None });
+
+        println!("hello");
+        let ping_response = c.send(PingRequest {}).unwrap();
+        assert_eq!(ping_response, PingResponse {});
+
+        println!("hello");
+        let exit_response = c.send(ExitRequest {}).unwrap();
+        assert_eq!(exit_response, ExitResponse {});
     }
 }

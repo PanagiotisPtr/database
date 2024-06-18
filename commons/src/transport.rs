@@ -1,4 +1,5 @@
 use crate::{operations::Operation, versions::Version};
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -11,5 +12,5 @@ pub struct MessageHeaders {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Message {
     pub headers: MessageHeaders,
-    pub content: Vec<u8>,
+    pub content: Bytes,
 }

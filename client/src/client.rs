@@ -1,14 +1,21 @@
 use anyhow::Result;
+use bytes::Bytes;
 use commons::{
     command::Command,
-    messages::{GetRequest, GetResponse, SetRequest, SetResponse},
+    messages::{
+        DelRequest, DelResponse, ExitRequest, ExitResponse, GetRequest, GetResponse, PingRequest,
+        PingResponse, SetRequest, SetResponse,
+    },
     operations::Operation,
     transport::{Message, MessageHeaders},
     versions::Version,
 };
 use rand::{rngs::ThreadRng, Rng};
 use serde::{de::DeserializeOwned, Serialize};
-use std::net::TcpStream;
+use std::{
+    io,
+    net::{Shutdown, TcpStream},
+};
 
 pub struct Client {
     version: Version,
@@ -28,14 +35,14 @@ impl Client {
         })
     }
 
-    fn put_message(&mut self, operation: Operation, data: &[u8]) -> Result<u32> {
+    fn put_message(&mut self, operation: Operation, data: Bytes) -> Result<u32> {
         let message = Message {
             headers: MessageHeaders {
                 version: self.version.clone(),
                 id: self.rng.gen::<u32>(),
                 operation,
             },
-            content: data.to_vec(),
+            content: data,
         };
 
         bincode::serialize_into(&mut self.stream, &message)?;
@@ -64,13 +71,28 @@ impl Client {
     }
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        match self.stream.shutdown(Shutdown::Both) {
+            Ok(_) => return,
+            Err(ref e) => {
+                if e.kind() == io::ErrorKind::NotConnected {
+                    return;
+                } else {
+                    eprintln!("failed to close TcpStream: {}", e)
+                }
+            }
+        }
+    }
+}
+
 impl<V> Command<GetRequest, GetResponse<V>> for Client
 where
     V: Serialize + DeserializeOwned + Clone,
 {
     fn send(&mut self, request: GetRequest) -> Result<GetResponse<V>> {
-        let id = self.put_message(Operation::GET, &bincode::serialize(&request)?)?;
-        let raw_response: GetResponse<Vec<u8>> = self.get_message(id, Operation::GET)?;
+        let id = self.put_message(Operation::GET, bincode::serialize(&request)?.into())?;
+        let raw_response: GetResponse<Bytes> = self.get_message(id, Operation::GET)?;
 
         match raw_response.value {
             Some(v) => Ok(GetResponse {
@@ -88,13 +110,36 @@ where
     fn send(&mut self, request: SetRequest<V>) -> Result<SetResponse> {
         let id = self.put_message(
             Operation::SET,
-            &bincode::serialize(&SetRequest::<Vec<u8>> {
+            bincode::serialize(&SetRequest::<Bytes> {
                 key: request.key,
-                value: bincode::serialize(&request.value)?,
-            })?,
+                value: bincode::serialize(&request.value)?.into(),
+            })?
+            .into(),
         )?;
-        self.get_message::<SetResponse>(id, Operation::SET)?;
+        self.get_message::<SetResponse>(id, Operation::SET)
+    }
+}
 
-        return Ok(SetResponse {});
+impl Command<DelRequest, DelResponse> for Client {
+    fn send(&mut self, request: DelRequest) -> Result<DelResponse> {
+        let id = self.put_message(
+            Operation::DEL,
+            bincode::serialize(&DelRequest { key: request.key })?.into(),
+        )?;
+        self.get_message::<DelResponse>(id, Operation::DEL)
+    }
+}
+
+impl Command<PingRequest, PingResponse> for Client {
+    fn send(&mut self, _: PingRequest) -> Result<PingResponse> {
+        let id = self.put_message(Operation::PING, bincode::serialize(&PingRequest {})?.into())?;
+        self.get_message::<PingResponse>(id, Operation::PING)
+    }
+}
+
+impl Command<ExitRequest, ExitResponse> for Client {
+    fn send(&mut self, _: ExitRequest) -> Result<ExitResponse> {
+        let id = self.put_message(Operation::EXIT, bincode::serialize(&ExitRequest {})?.into())?;
+        self.get_message::<ExitResponse>(id, Operation::EXIT)
     }
 }
