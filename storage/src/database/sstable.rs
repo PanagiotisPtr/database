@@ -88,9 +88,7 @@ impl SSTable {
         file.seek(SeekFrom::Start(metadata.len() - header_size))?;
         let header: Header = bincode::deserialize_from(&mut file)?;
         file.seek(SeekFrom::Start(header.index_ptr.start))?;
-        let mut buffer = vec![0u8; header.index_ptr.size.try_into()?];
-        file.read_exact(&mut buffer)?;
-        let index = bincode::deserialize(&mut buffer)?;
+        let index = bincode::deserialize_from(&mut file)?;
 
         #[cfg(test)]
         let filename = path
