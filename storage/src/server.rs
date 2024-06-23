@@ -26,7 +26,7 @@ impl Server {
     pub fn new() -> Self {
         Server {
             version: Version::V0,
-            storage: Memtable::new().unwrap(),
+            storage: Memtable::new(),
         }
     }
 
