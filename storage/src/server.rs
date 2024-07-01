@@ -13,7 +13,7 @@ use commons::{
     versions::Version,
 };
 
-use crate::database::memtable::Memtable;
+use crate::lsm_tree::memtable::Memtable;
 use bytes::Bytes;
 use commons::command::Command;
 
@@ -31,6 +31,7 @@ impl Server {
     }
 
     pub fn listen(&mut self, port: &str) {
+        /*
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
         for stream in listener.incoming() {
             let stream = stream.unwrap();
@@ -42,8 +43,10 @@ impl Server {
                 }
             }
         }
+        */
     }
 
+    /*
     fn handle_get(&mut self, content: Bytes) -> Result<GetResponse<Bytes>> {
         let request = bincode::deserialize(&content)?;
         self.storage.send(request)
@@ -141,4 +144,5 @@ impl Server {
             }
         }
     }
+    */
 }
