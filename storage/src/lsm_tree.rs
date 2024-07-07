@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use anyhow::Result;
 use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
 
@@ -8,6 +10,7 @@ use self::{
 };
 
 const MAX_MEMTABLE_SIZE_BYTES: u64 = 200;
+const MAX_MEMTABLES: usize = 4;
 
 pub mod config;
 pub mod iterators;
@@ -16,7 +19,7 @@ pub mod sstable;
 
 pub struct LSMTree {
     active_memtable: Memtable<Active>,
-    locked_memtables: Vec<Memtable<Locked>>,
+    locked_memtables: VecDeque<Memtable<Locked>>,
     sstables: Vec<SSTable>,
 }
 
@@ -24,7 +27,7 @@ impl LSMTree {
     pub fn new() -> Self {
         Self {
             active_memtable: Memtable::new(),
-            locked_memtables: Vec::with_capacity(4),
+            locked_memtables: VecDeque::with_capacity(MAX_MEMTABLES),
             sstables: vec![],
         }
     }
@@ -40,6 +43,11 @@ impl<'a> ReadStore<'a> for LSMTree {
                 return Ok(Some(value));
             }
         }
+        for sstable in self.sstables.iter_mut().rev() {
+            if let Some(value) = sstable.get(key.clone())? {
+                return Ok(Some(value));
+            }
+        }
         Ok(None)
     }
 
@@ -47,6 +55,9 @@ impl<'a> ReadStore<'a> for LSMTree {
         let mut v: Vec<EntryIterator<'a>> = vec![];
         v.push(self.active_memtable.scan(key.clone())?);
         for table in self.locked_memtables.iter_mut() {
+            v.push(table.scan(key.clone())?);
+        }
+        for table in self.sstables.iter_mut() {
             v.push(table.scan(key.clone())?);
         }
 
@@ -63,7 +74,17 @@ impl<'a> WriteStore<'a> for LSMTree {
         } + bincode::serialized_size(&key)?;
         if active_size + entry_size > MAX_MEMTABLE_SIZE_BYTES {
             let curr = std::mem::take(&mut self.active_memtable);
-            self.locked_memtables.push(curr.lock());
+            self.locked_memtables.push_back(curr.lock());
+        }
+        if self.locked_memtables.len() > MAX_MEMTABLES {
+            let mut v = vec![];
+            for table in self.locked_memtables.iter_mut() {
+                v.push(table.scan(None)?);
+            }
+
+            self.sstables
+                .push(SSTable::new(Box::new(LSMTreeIterator::new(v)))?);
+            self.locked_memtables.clear();
         }
         self.active_memtable.set(key, val)
     }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs::File,
     io::{BufRead, Cursor, Read, Seek, SeekFrom},
     path::Path,
@@ -127,7 +127,7 @@ impl<'a> Iterator for SSTableIterator<'a> {
 }
 
 impl SSTable {
-    pub fn new(mut memtable: Memtable<Locked>) -> Result<Self> {
+    pub fn new(entries: EntryIterator) -> Result<Self> {
         let data_dir = "./data";
         let path = std::path::Path::new(data_dir);
         if !path.exists() {
@@ -143,7 +143,7 @@ impl SSTable {
         let mut end;
         let mut block = Block::default();
         let mut last_key: Option<KeyType> = None;
-        for (key, value) in memtable.scan(None)? {
+        for (key, value) in entries {
             let entry_size = bincode::serialized_size(&key)? + bincode::serialized_size(&value)?;
             if block.num_entries > 0 && entry_size + block.file_ptr.size > SSTABLE_BLOCK_SIZE {
                 println!("last key: {:?}", last_key);
