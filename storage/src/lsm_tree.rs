@@ -1,8 +1,5 @@
-use std::iter::Peekable;
-
 use anyhow::Result;
-use bytes::Bytes;
-use commons::messages::KeyType;
+use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
 
 use self::{
     iterators::LSMTreeIterator,
@@ -31,22 +28,36 @@ impl LSMTree {
             sstables: vec![],
         }
     }
+}
 
-    pub fn get(&self, key: &KeyType) -> Option<&Bytes> {
-        if let Some(value) = self.active_memtable.get(key) {
-            return value.as_ref();
+impl<'a> ReadStore<'a> for LSMTree {
+    fn get(&'a mut self, key: KeyType) -> Result<ValueType> {
+        if let Some(value) = self.active_memtable.get(key.clone())? {
+            return Ok(Some(value));
         }
-        for memtable in self.locked_memtables.iter().rev() {
-            if let Some(value) = memtable.get(key) {
-                return value.as_ref();
+        for memtable in self.locked_memtables.iter_mut().rev() {
+            if let Some(value) = memtable.get(key.clone())? {
+                return Ok(Some(value));
             }
         }
-        None
+        Ok(None)
     }
 
-    pub fn set(&mut self, key: KeyType, value: Option<Bytes>) -> Result<()> {
+    fn scan(&'a mut self, key: Option<KeyType>) -> Result<EntryIterator<'a>> {
+        let mut v: Vec<EntryIterator<'a>> = vec![];
+        v.push(self.active_memtable.scan(key.clone())?);
+        for table in self.locked_memtables.iter_mut() {
+            v.push(table.scan(key.clone())?);
+        }
+
+        Ok(Box::new(LSMTreeIterator::new(v)))
+    }
+}
+
+impl<'a> WriteStore<'a> for LSMTree {
+    fn set(&'a mut self, key: KeyType, val: ValueType) -> Result<()> {
         let active_size = self.active_memtable.size_bytes()?;
-        let entry_size: u64 = match &value {
+        let entry_size: u64 = match &val {
             Some(v) => v.len().try_into()?,
             None => 0,
         } + bincode::serialized_size(&key)?;
@@ -54,28 +65,14 @@ impl LSMTree {
             let curr = std::mem::take(&mut self.active_memtable);
             self.locked_memtables.push(curr.lock());
         }
-        self.active_memtable.set(key, value)
-    }
-
-    pub fn scan(
-        &self,
-        key: Option<&KeyType>,
-    ) -> Peekable<Box<dyn Iterator<Item = (&KeyType, &Option<Bytes>)> + '_>> {
-        let mut v = vec![];
-        v.push(self.active_memtable.scan(key));
-        for table in &self.locked_memtables {
-            v.push(table.scan(key));
-        }
-
-        let iter: Box<dyn Iterator<Item = _>> = Box::new(LSMTreeIterator::new(v));
-        iter.peekable()
+        self.active_memtable.set(key, val)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use commons::messages::KeyType;
+    use commons::spec::{KeyType, ReadStore, WriteStore};
 
     use super::LSMTree;
 
@@ -101,7 +98,7 @@ mod tests {
         lsm_tree.set(to_key("p"), to_bytes("world")).unwrap();
         lsm_tree.set(to_key("a"), to_bytes("world")).unwrap();
 
-        for (key, value) in lsm_tree.scan(Some(&to_key("e"))) {
+        for (key, value) in lsm_tree.scan(Some(to_key("e"))).unwrap() {
             println!("key: {:?}\t value: {:?}", key, value);
         }
 

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use commons::messages::KeyType;
+use commons::spec::{KeyType, ReadStore, WriteStore};
 use lsm_tree::LSMTree;
 
 use crate::lsm_tree::{memtable::Memtable, sstable::SSTable};
@@ -27,8 +27,15 @@ fn main() {
     lsm_tree.set(to_key("p"), to_bytes("world")).unwrap();
     lsm_tree.set(to_key("a"), to_bytes("world")).unwrap();
 
-    for (key, value) in lsm_tree.scan(Some(&to_key("e"))) {
+    println!("iterating from 'e'");
+    let mut i = 0;
+    for (key, value) in lsm_tree.scan(Some(to_key("e"))).unwrap() {
         println!("key: {:?}\t value: {:?}", key, value);
+        if i > 15 {
+            println!("oops!");
+            break;
+        }
+        i += 1;
     }
 
     println!("SSTable test");
@@ -50,26 +57,32 @@ fn main() {
     memtable.set(to_key("p"), to_bytes("world")).unwrap();
     memtable.set(to_key("a"), to_bytes("world")).unwrap();
 
-    let mut sstable = SSTable::new(&memtable.lock()).unwrap();
+    let mut sstable = SSTable::new(memtable.lock()).unwrap();
 
-    println!("iterating");
-    for (key, value) in sstable.scan(&to_key("e")) {
+    println!("iterating from 'e'");
+    i = 0;
+    for (key, value) in sstable.scan(Some(to_key("e"))).unwrap() {
         println!("key: {:?}\t value: {:?}", key, value);
+        if i > 15 {
+            println!("oops!");
+            break;
+        }
+        i += 1;
     }
 
     println!("getting: {:?}", to_key("c"));
-    let mut res = sstable.get(&to_key("c"));
+    let mut res = sstable.get(to_key("c"));
     println!("res: {:?}", res);
 
     println!("getting: {:?}", to_key("i"));
-    res = sstable.get(&to_key("i"));
+    res = sstable.get(to_key("i"));
     println!("res: {:?}", res);
 
     println!("getting: {:?}", to_key("a"));
-    res = sstable.get(&to_key("a"));
+    res = sstable.get(to_key("a"));
     println!("res: {:?}", res);
 
     println!("getting: {:?}", to_key("aaa"));
-    res = sstable.get(&to_key("aaa"));
+    res = sstable.get(to_key("aaa"));
     println!("res: {:?}", res);
 }

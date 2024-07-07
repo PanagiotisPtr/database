@@ -1,11 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::spec::KeyType;
 
-#[derive(Ord, Eq, PartialEq, PartialOrd, Serialize, Deserialize, Debug, Clone)]
-pub enum KeyType {
-    Int(i64),
-    Str(String),
-    Unsigned(u64),
-}
+use serde::{Deserialize, Serialize};
 
 #[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct GetRequest {

@@ -2,15 +2,12 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{BufRead, Cursor, Read, Seek, SeekFrom},
-    iter::Peekable,
     path::Path,
-    sync::{Arc, Mutex},
 };
 
 use crate::lsm_tree::memtable::Memtable;
 use anyhow::Result;
-use bytes::Bytes;
-use commons::messages::KeyType;
+use commons::spec::{Entry, EntryIterator, KeyType, ReadStore, ValueType};
 use serde::{Deserialize, Serialize};
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -42,53 +39,42 @@ struct BlockIterator {
 }
 
 impl Block {
-    fn get(&self, file: Arc<Mutex<File>>, key: &KeyType) -> Option<Bytes> {
-        let iter = self.iter(file).ok()?;
+    fn get(&self, file: &mut File, key: KeyType) -> Result<ValueType> {
+        let iter = self.iter(file)?;
         for (k, v) in iter {
             if key.eq(&k) {
-                return v;
+                return Ok(v);
             }
         }
 
-        None
+        Ok(None)
     }
 
-    fn scan(&self, key: &KeyType, file: Arc<Mutex<File>>) -> Result<Peekable<BlockIterator>> {
-        let iter = self.iter(file)?;
-        let mut peekable = iter.peekable();
-
-        loop {
-            match peekable.peek() {
-                None => break,
-                Some((k, _)) => {
-                    if k.eq(key) {
-                        break;
-                    } else {
-                        peekable.next();
-                    }
-                }
-            };
+    fn scan(&self, key: Option<KeyType>, file: &mut File) -> Result<EntryIterator> {
+        if let None = key {
+            return self.iter(file);
         }
-
-        Ok(peekable)
+        let key = key.unwrap();
+        Ok(Box::new(
+            self.iter(file)?.skip_while(move |(k, _)| k.lt(&key)),
+        ))
     }
 
-    fn iter(&self, file: Arc<Mutex<File>>) -> Result<BlockIterator> {
-        let mut file = file.lock().unwrap();
+    fn iter(&self, file: &mut File) -> Result<EntryIterator> {
         file.seek(SeekFrom::Start(self.file_ptr.start))?;
         let mut buffer = vec![0u8; SSTABLE_BLOCK_SIZE.try_into()?];
         file.read_exact(&mut buffer).unwrap();
 
-        Ok(BlockIterator {
+        Ok(Box::new(BlockIterator {
             idx: 0,
             total: self.num_entries,
             reader: Box::new(Cursor::new(buffer)),
-        })
+        }))
     }
 }
 
 impl Iterator for BlockIterator {
-    type Item = (KeyType, Option<Bytes>);
+    type Item = (KeyType, ValueType);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx == self.total {
@@ -105,20 +91,21 @@ impl Iterator for BlockIterator {
 pub struct SSTable {
     header: Header,
     index: BTreeMap<KeyType, Block>,
-    file: Arc<Mutex<File>>,
+    file: File,
 
     #[cfg(test)]
     pub filename: String,
 }
 
 pub struct SSTableIterator<'a> {
-    outer: Peekable<std::collections::btree_map::Range<'a, KeyType, Block>>,
-    inner: Option<Peekable<BlockIterator>>,
-    file: Arc<Mutex<File>>,
+    key: Option<KeyType>,
+    outer: Box<dyn Iterator<Item = &'a Block> + 'a>,
+    inner: Option<EntryIterator<'a>>,
+    file: &'a mut File,
 }
 
 impl<'a> Iterator for SSTableIterator<'a> {
-    type Item = (KeyType, Option<Bytes>);
+    type Item = Entry;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -129,9 +116,9 @@ impl<'a> Iterator for SSTableIterator<'a> {
             }
 
             match self.outer.next() {
-                Some((_, block)) => {
-                    let iter = block.iter(Arc::clone(&self.file)).ok()?;
-                    self.inner = Some(iter.peekable());
+                Some(block) => {
+                    let iter = block.scan(self.key.clone(), &mut self.file).ok()?;
+                    self.inner = Some(iter);
                 }
                 None => return None,
             }
@@ -140,7 +127,7 @@ impl<'a> Iterator for SSTableIterator<'a> {
 }
 
 impl SSTable {
-    pub fn new(memtable: &Memtable<Locked>) -> Result<Self> {
+    pub fn new(mut memtable: Memtable<Locked>) -> Result<Self> {
         let data_dir = "./data";
         let path = std::path::Path::new(data_dir);
         if !path.exists() {
@@ -155,18 +142,16 @@ impl SSTable {
         let mut start = 0;
         let mut end;
         let mut block = Block::default();
-        let mut last_key: Option<&KeyType> = None;
-        for (key, value) in memtable.get_data() {
+        let mut last_key: Option<KeyType> = None;
+        for (key, value) in memtable.scan(None)? {
             let entry_size = bincode::serialized_size(&key)? + bincode::serialized_size(&value)?;
             if block.num_entries > 0 && entry_size + block.file_ptr.size > SSTABLE_BLOCK_SIZE {
+                println!("last key: {:?}", last_key);
                 index.insert(last_key.unwrap().clone(), block);
                 block = Block::default();
                 block.file_ptr.start = start;
-                last_key = None;
             }
-            if last_key == None {
-                last_key = Some(key);
-            }
+            last_key = Some(key.clone());
             bincode::serialize_into(&mut file, &key)?;
             bincode::serialize_into(&mut file, &value)?;
             end = file.seek(SeekFrom::Current(0))?;
@@ -175,6 +160,7 @@ impl SSTable {
             block.num_entries += 1;
         }
         if block.file_ptr.size > 0 {
+            println!("last key: {:?}", last_key);
             index.insert(last_key.unwrap().clone(), block);
         }
         bincode::serialize_into(&mut file, &index)?;
@@ -190,31 +176,11 @@ impl SSTable {
         Ok(SSTable {
             header,
             index,
-            file: Arc::new(Mutex::new(File::open(&file_loc)?)),
+            file: File::open(&file_loc)?,
 
             #[cfg(test)]
             filename,
         })
-    }
-
-    pub fn get(&mut self, key: &KeyType) -> Option<Bytes> {
-        let mut range = self.index.range(..=key).rev().peekable();
-        match range.peek() {
-            None => None,
-            Some((_, b)) => b.get(Arc::clone(&self.file), key),
-        }
-    }
-
-    pub fn scan(&mut self, key: &KeyType) -> SSTableIterator {
-        let entry = self.index.range(..=key).rev().next();
-        SSTableIterator {
-            outer: self.index.range(key..).peekable(),
-            inner: match entry {
-                None => None,
-                Some((_, b)) => b.scan(key, Arc::clone(&self.file)).ok(),
-            },
-            file: Arc::clone(&self.file),
-        }
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -237,9 +203,36 @@ impl SSTable {
         Ok(SSTable {
             header,
             index,
-            file: Arc::new(Mutex::new(file)),
+            file,
             #[cfg(test)]
             filename,
         })
+    }
+}
+
+impl<'a> ReadStore<'a> for SSTable {
+    fn get(&'a mut self, key: KeyType) -> Result<ValueType> {
+        let mut range = self.index.range(key.clone()..).peekable();
+        match range.peek() {
+            None => Ok(None),
+            Some((_, b)) => b.get(&mut self.file, key),
+        }
+    }
+
+    fn scan(&'a mut self, key: Option<KeyType>) -> Result<EntryIterator> {
+        let outer: Box<dyn Iterator<Item = &'a Block> + 'a> = match &key {
+            Some(key) => Box::new(self.index.range(key.clone()..).map(|(_, b)| b)),
+            None => Box::new(self.index.values()),
+        };
+
+        Ok(Box::new(
+            SSTableIterator {
+                key: key.clone(),
+                outer,
+                inner: None,
+                file: &mut self.file,
+            }
+            .into_iter(),
+        ))
     }
 }

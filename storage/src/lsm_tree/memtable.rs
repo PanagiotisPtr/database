@@ -1,14 +1,11 @@
-use std::{collections::BTreeMap, iter::Peekable};
+use std::collections::BTreeMap;
 
 use anyhow::Result;
-use bytes::Bytes;
-use commons::messages::KeyType;
+use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
 use serde::{Deserialize, Serialize};
 
 pub struct Active;
 pub struct Locked;
-
-pub type ValueType = Option<Bytes>;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Memtable<T = Active> {
@@ -16,20 +13,34 @@ pub struct Memtable<T = Active> {
     data: BTreeMap<KeyType, ValueType>,
 }
 
-impl<T> Memtable<T> {
-    pub fn get(&self, key: &KeyType) -> Option<&ValueType> {
-        self.data.get(key)
+impl<'a, T> ReadStore<'a> for Memtable<T> {
+    fn get(&'a mut self, key: KeyType) -> Result<ValueType> {
+        Ok(match self.data.get(&key) {
+            Some(v) => match v {
+                None => None,
+                Some(b) => Some(b.clone()),
+            },
+            None => None,
+        })
     }
 
-    pub fn scan(
-        &self,
-        key: Option<&KeyType>,
-    ) -> Peekable<Box<dyn Iterator<Item = (&KeyType, &Option<Bytes>)> + '_>> {
-        let iter: Box<dyn Iterator<Item = _>> = match key {
-            None => Box::new(self.data.iter()),
-            Some(k) => Box::new(self.data.range(k..)),
+    fn scan(&'a mut self, key: Option<KeyType>) -> Result<EntryIterator<'a>> {
+        let iter: EntryIterator<'a> = match key {
+            None => Box::new(
+                self.data
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_ref().map(|v| v.clone()))),
+            ),
+            Some(k) => Box::new(self.data.range(k..).map(|(k, v)| (k.clone(), v.clone()))),
         };
-        iter.peekable()
+        Ok(iter)
+    }
+}
+
+impl<'a, T> WriteStore<'a> for Memtable<T> {
+    fn set(&'a mut self, key: KeyType, val: ValueType) -> Result<()> {
+        self.data.insert(key, val);
+        Ok(())
     }
 }
 
@@ -39,15 +50,6 @@ impl Memtable<Active> {
             status: std::marker::PhantomData,
             data: BTreeMap::new(),
         }
-    }
-
-    pub fn set(&mut self, key: KeyType, value: Option<Bytes>) -> Result<()> {
-        self.data.insert(key, value);
-        Ok(())
-    }
-
-    pub fn del(&mut self, key: KeyType) -> Result<()> {
-        self.set(key, None)
     }
 
     pub fn lock(self) -> Memtable<Locked> {
@@ -71,11 +73,5 @@ impl From<Memtable<Active>> for Memtable<Locked> {
             status: std::marker::PhantomData,
             data: value.data,
         }
-    }
-}
-
-impl Memtable<Locked> {
-    pub fn get_data(&self) -> &BTreeMap<KeyType, Option<Bytes>> {
-        &self.data
     }
 }

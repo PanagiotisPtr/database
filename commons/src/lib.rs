@@ -1,6 +1,7 @@
 pub mod command;
 pub mod messages;
 pub mod operations;
+pub mod spec;
 pub mod transport;
 pub mod versions;
 
