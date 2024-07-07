@@ -13,3 +13,4 @@ uuid = { version = "1.8.0", features = ["v7"] }
 config = "0.14.0"
 serde_toml = "0.0.1"
 once_cell = "1.19.0"
+rand = "0.8.5"

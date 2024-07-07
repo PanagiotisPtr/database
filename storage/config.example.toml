@@ -2,8 +2,7 @@
 [lsm_tree_config]
 max_memtable_size_bytes = 1048576
 max_number_of_memtables = 4
-sstable_block_size_bytes = 4096
 data_dir = "/var/database/data"
 
 [sstable_config]
-sstable_block_size = 1048576
+sstable_block_size_bytes = 4096

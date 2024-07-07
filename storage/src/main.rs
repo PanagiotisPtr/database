@@ -1,7 +1,12 @@
+use rand::seq::SliceRandom;
+use std::io::BufRead;
+use std::time::Instant;
+use std::{fs::File, io::BufReader};
+
 use anyhow::Result;
 use bytes::Bytes;
-use commons::spec::{KeyType, ReadStore, WriteStore};
-use config::{Config as ConfigLoader, File, FileFormat};
+use commons::spec::{Entry, KeyType, ReadStore, WriteStore};
+use config::{Config as ConfigLoader, File as ConfigFile, FileFormat};
 use lsm_tree::LSMTree;
 
 use crate::lsm_tree::config::{Config, LSMTreeConfig, SSTableConfig};
@@ -11,11 +16,11 @@ mod server;
 
 fn main() -> Result<()> {
     let builder = ConfigLoader::builder()
-        .set_default("max_memtable_size_bytes", 200)?
+        .set_default("max_memtable_size_bytes", 32768)?
         .set_default("max_number_of_memtables", 4)?
-        .set_default("sstable_block_size_bytes", 200)?
+        .set_default("sstable_block_size_bytes", 4096)?
         .set_default("data_dir", "/var/database/data")?
-        .add_source(File::new("config.toml", FileFormat::Toml));
+        .add_source(ConfigFile::new("config.toml", FileFormat::Toml));
     let cfg = builder.build()?;
     let config = Config {
         lsm_tree_config: LSMTreeConfig {
@@ -27,71 +32,63 @@ fn main() -> Result<()> {
             sstable_block_size_bytes: u64::try_from(cfg.get_int("sstable_block_size_bytes")?)?,
         },
     };
+    let mut entry_count = 0;
+    let batch_size_bytes = 1 << 24;
+    let mut entries: Vec<Entry> = vec![];
     println!("config: {:?}", config);
+    println!("{:?} {:?}", entry_count, batch_size_bytes);
 
-    let mut lsm_tree = LSMTree::new(config);
     let to_bytes = |s: &str| -> Option<Bytes> { Some(Bytes::from(bincode::serialize(s).unwrap())) };
     let to_key = |s: &str| -> KeyType { KeyType::Str(s.to_string()) };
-    lsm_tree.set(to_key("c0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("e0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("f0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("l0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("m0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("n0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("o0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("g0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("h0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("i0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("j0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("b0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("k0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("p0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("a0"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("c1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("e1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("f1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("l1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("m1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("n1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("o1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("g1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("h1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("i1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("j1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("b1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("k1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("p1"), to_bytes("world")).unwrap();
-    lsm_tree.set(to_key("a1"), to_bytes("world")).unwrap();
 
-    println!("iterating from 'e'");
-    for (key, value) in lsm_tree.scan(Some(to_key("e"))).unwrap() {
-        println!("key: {:?}\t value: {:?}", key, value);
+    let file = File::open("/usr/share/dict/words")?;
+    let reader = BufReader::new(file);
+    let words: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+
+    loop {
+        let key = words.choose(&mut rand::thread_rng()).unwrap().clone();
+        let mut value = String::from("");
+        for _ in 0..10 {
+            let word = words.choose(&mut rand::thread_rng()).unwrap().clone();
+            value.push_str(&word);
+            value.push_str(" ");
+        }
+        entries.push((to_key(&key), to_bytes(&value)));
+        let total_size = bincode::serialized_size(&entries)?;
+        entry_count += 1;
+        if total_size > batch_size_bytes {
+            break;
+        }
+    }
+    let entries_keys: Vec<KeyType> = entries.iter().map(|(k, _)| k.clone()).collect();
+
+    let mut lsm_tree = LSMTree::new(config);
+    println!("Total entries: {}", entry_count);
+    let now = Instant::now();
+
+    for (key, value) in entries {
+        lsm_tree.set(key, value)?;
     }
 
-    println!("getting: {:?}", to_key("c0"));
-    let mut res = lsm_tree.get(to_key("c0"));
-    println!("res: {:?}", res);
+    let elapsed = now.elapsed();
+    println!("Inserting time: {:.4?}", elapsed);
 
-    println!("getting: {:?}", to_key("i0"));
-    res = lsm_tree.get(to_key("i0"));
-    println!("res: {:?}", res);
+    let mut count = 0;
+    let now = Instant::now();
+    for _ in 0..100 {
+        for (_, _) in lsm_tree.scan(None).unwrap() {
+            count += 1;
+        }
+    }
+    let elapsed = now.elapsed();
+    println!("100 scans time: {:.4?}", elapsed);
 
-    println!("getting: {:?}", to_key("a0"));
-    res = lsm_tree.get(to_key("a0"));
-    println!("res: {:?}", res);
-
-    println!("getting: {:?}", to_key("e0"));
-    res = lsm_tree.get(to_key("e0"));
-    println!("res: {:?}", res);
-
-    println!("getting: {:?}", to_key("e1"));
-    res = lsm_tree.get(to_key("a0"));
-    println!("res: {:?}", res);
-
-    println!("getting: {:?}", to_key("aaa"));
-    res = lsm_tree.get(to_key("aaa"));
-    println!("res: {:?}", res);
-    println!("SSTable test");
+    let now = Instant::now();
+    for key in entries_keys {
+        lsm_tree.del(key)?;
+    }
+    let elapsed = now.elapsed();
+    println!("Deleting time: {:.4?}", elapsed);
 
     Ok(())
 }

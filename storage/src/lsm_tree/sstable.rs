@@ -72,7 +72,7 @@ impl Block {
     fn iter(&self, file: &mut File) -> Result<EntryIterator> {
         file.seek(SeekFrom::Start(self.file_ptr.start))?;
         let mut buffer = vec![0u8; self.config.sstable_block_size_bytes.try_into()?];
-        file.read_exact(&mut buffer).unwrap();
+        file.read(&mut buffer).unwrap();
 
         Ok(Box::new(BlockIterator {
             idx: 0,
