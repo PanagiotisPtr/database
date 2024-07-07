@@ -1,19 +1,17 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     fs::File,
     io::{BufRead, Cursor, Read, Seek, SeekFrom},
     path::Path,
+    sync::Arc,
 };
 
-use crate::lsm_tree::memtable::Memtable;
 use anyhow::Result;
 use commons::spec::{Entry, EntryIterator, KeyType, ReadStore, ValueType};
 use serde::{Deserialize, Serialize};
 use uuid::{NoContext, Timestamp, Uuid};
 
-use super::memtable::Locked;
-
-const SSTABLE_BLOCK_SIZE: u64 = 200;
+use super::config::SSTableConfig;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
 struct FilePointer {
@@ -26,10 +24,13 @@ struct Header {
     index_ptr: FilePointer,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Block {
     file_ptr: FilePointer,
     num_entries: u64,
+
+    #[serde(skip)]
+    config: Arc<SSTableConfig>,
 }
 
 struct BlockIterator {
@@ -39,6 +40,14 @@ struct BlockIterator {
 }
 
 impl Block {
+    fn new(config: Arc<SSTableConfig>) -> Self {
+        Self {
+            file_ptr: FilePointer::default(),
+            num_entries: u64::default(),
+            config,
+        }
+    }
+
     fn get(&self, file: &mut File, key: KeyType) -> Result<ValueType> {
         let iter = self.iter(file)?;
         for (k, v) in iter {
@@ -62,7 +71,7 @@ impl Block {
 
     fn iter(&self, file: &mut File) -> Result<EntryIterator> {
         file.seek(SeekFrom::Start(self.file_ptr.start))?;
-        let mut buffer = vec![0u8; SSTABLE_BLOCK_SIZE.try_into()?];
+        let mut buffer = vec![0u8; self.config.sstable_block_size_bytes.try_into()?];
         file.read_exact(&mut buffer).unwrap();
 
         Ok(Box::new(BlockIterator {
@@ -89,6 +98,7 @@ impl Iterator for BlockIterator {
 
 #[derive(Debug)]
 pub struct SSTable {
+    config: Arc<SSTableConfig>,
     header: Header,
     index: BTreeMap<KeyType, Block>,
     file: File,
@@ -127,7 +137,7 @@ impl<'a> Iterator for SSTableIterator<'a> {
 }
 
 impl SSTable {
-    pub fn new(entries: EntryIterator) -> Result<Self> {
+    pub fn new(config: Arc<SSTableConfig>, entries: EntryIterator) -> Result<Self> {
         let data_dir = "./data";
         let path = std::path::Path::new(data_dir);
         if !path.exists() {
@@ -141,14 +151,15 @@ impl SSTable {
         let mut index: BTreeMap<KeyType, Block> = BTreeMap::new();
         let mut start = 0;
         let mut end;
-        let mut block = Block::default();
+        let mut block = Block::new(Arc::clone(&config));
         let mut last_key: Option<KeyType> = None;
         for (key, value) in entries {
             let entry_size = bincode::serialized_size(&key)? + bincode::serialized_size(&value)?;
-            if block.num_entries > 0 && entry_size + block.file_ptr.size > SSTABLE_BLOCK_SIZE {
-                println!("last key: {:?}", last_key);
+            if block.num_entries > 0
+                && entry_size + block.file_ptr.size > config.sstable_block_size_bytes
+            {
                 index.insert(last_key.unwrap().clone(), block);
-                block = Block::default();
+                block = Block::new(Arc::clone(&config));
                 block.file_ptr.start = start;
             }
             last_key = Some(key.clone());
@@ -160,7 +171,6 @@ impl SSTable {
             block.num_entries += 1;
         }
         if block.file_ptr.size > 0 {
-            println!("last key: {:?}", last_key);
             index.insert(last_key.unwrap().clone(), block);
         }
         bincode::serialize_into(&mut file, &index)?;
@@ -174,6 +184,7 @@ impl SSTable {
         bincode::serialize_into(&mut file, &header)?;
 
         Ok(SSTable {
+            config: Arc::clone(&config),
             header,
             index,
             file: File::open(&file_loc)?,
@@ -183,7 +194,7 @@ impl SSTable {
         })
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(config: Arc<SSTableConfig>, path: &Path) -> Result<Self> {
         let mut file = File::open(path)?;
         let metadata = file.metadata()?;
         let header_size = bincode::serialized_size(&Header::default())?;
@@ -201,6 +212,7 @@ impl SSTable {
             .unwrap_or("".to_string());
 
         Ok(SSTable {
+            config: Arc::clone(&config),
             header,
             index,
             file,

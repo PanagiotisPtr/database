@@ -1,16 +1,14 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use anyhow::Result;
 use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
 
 use self::{
+    config::Config,
     iterators::LSMTreeIterator,
     memtable::{Active, Locked, Memtable},
     sstable::SSTable,
 };
-
-const MAX_MEMTABLE_SIZE_BYTES: u64 = 200;
-const MAX_MEMTABLES: usize = 4;
 
 pub mod config;
 pub mod iterators;
@@ -18,18 +16,27 @@ pub mod memtable;
 pub mod sstable;
 
 pub struct LSMTree {
+    config: Arc<Config>,
     active_memtable: Memtable<Active>,
     locked_memtables: VecDeque<Memtable<Locked>>,
     sstables: Vec<SSTable>,
 }
 
 impl LSMTree {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(config: Config) -> Self {
+        let mut tree = Self {
+            config: Arc::new(config),
             active_memtable: Memtable::new(),
-            locked_memtables: VecDeque::with_capacity(MAX_MEMTABLES),
+            locked_memtables: VecDeque::with_capacity(0),
             sstables: vec![],
-        }
+        };
+        tree.locked_memtables =
+            VecDeque::with_capacity(tree.config.lsm_tree_config.max_number_of_memtables);
+        tree
+    }
+
+    pub fn new_default() -> Self {
+        Self::new(Config::new_default())
     }
 }
 
@@ -72,18 +79,20 @@ impl<'a> WriteStore<'a> for LSMTree {
             Some(v) => v.len().try_into()?,
             None => 0,
         } + bincode::serialized_size(&key)?;
-        if active_size + entry_size > MAX_MEMTABLE_SIZE_BYTES {
+        if active_size + entry_size > self.config.lsm_tree_config.max_memtable_size_bytes {
             let curr = std::mem::take(&mut self.active_memtable);
             self.locked_memtables.push_back(curr.lock());
         }
-        if self.locked_memtables.len() > MAX_MEMTABLES {
+        if self.locked_memtables.len() > self.config.lsm_tree_config.max_number_of_memtables {
             let mut v = vec![];
             for table in self.locked_memtables.iter_mut() {
                 v.push(table.scan(None)?);
             }
 
-            self.sstables
-                .push(SSTable::new(Box::new(LSMTreeIterator::new(v)))?);
+            self.sstables.push(SSTable::new(
+                Arc::new(self.config.sstable_config.clone()),
+                Box::new(LSMTreeIterator::new(v)),
+            )?);
             self.locked_memtables.clear();
         }
         self.active_memtable.set(key, val)
@@ -99,7 +108,7 @@ mod tests {
 
     #[test]
     fn scan_test() {
-        let mut lsm_tree = LSMTree::new();
+        let mut lsm_tree = LSMTree::new_default();
         let to_bytes =
             |s: &str| -> Option<Bytes> { Some(Bytes::from(bincode::serialize(s).unwrap())) };
         let to_key = |s: &str| -> KeyType { KeyType::Str(s.to_string()) };
