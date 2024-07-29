@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         },
     };
     let mut entry_count = 0;
-    let batch_size_bytes = 1 << 24;
+    let batch_size_bytes = 1 << 18;
     let mut entries: Vec<Entry> = vec![];
     println!("config: {:?}", config);
     println!("{:?} {:?}", entry_count, batch_size_bytes);
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     }
     let entries_keys: Vec<KeyType> = entries.iter().map(|(k, _)| k.clone()).collect();
 
-    let mut lsm_tree = LSMTree::new(config);
+    let mut lsm_tree = LSMTree::new(config).unwrap();
     println!("Total entries: {}", entry_count);
     let now = Instant::now();
 

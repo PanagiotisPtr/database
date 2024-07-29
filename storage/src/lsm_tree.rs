@@ -1,7 +1,8 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, fs::File, sync::Arc};
 
 use anyhow::Result;
 use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
+use uuid::{NoContext, Timestamp, Uuid};
 
 use self::{
     config::Config,
@@ -20,23 +21,37 @@ pub struct LSMTree {
     active_memtable: Memtable<Active>,
     locked_memtables: VecDeque<Memtable<Locked>>,
     sstables: Vec<SSTable>,
+    log: File,
 }
 
 impl LSMTree {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self> {
         let mut tree = Self {
             config: Arc::new(config),
             active_memtable: Memtable::new(),
             locked_memtables: VecDeque::with_capacity(0),
             sstables: vec![],
+            log: Self::create_log()?,
         };
         tree.locked_memtables =
             VecDeque::with_capacity(tree.config.lsm_tree_config.max_number_of_memtables);
-        tree
+        Ok(tree)
     }
 
-    pub fn new_default() -> Self {
+    pub fn new_default() -> Result<Self> {
         Self::new(Config::new_default())
+    }
+
+    fn create_log() -> Result<File> {
+        let data_dir = "./logs";
+        let path = std::path::Path::new(data_dir);
+        if !path.exists() {
+            std::fs::create_dir_all(data_dir)?;
+        }
+        let ts = Timestamp::now(NoContext);
+        let filename = Uuid::new_v7(ts).to_string() + ".log";
+        let file_loc = path.join(filename.clone());
+        Ok(File::create(&file_loc)?)
     }
 }
 
@@ -74,6 +89,8 @@ impl<'a> ReadStore<'a> for LSMTree {
 
 impl<'a> WriteStore<'a> for LSMTree {
     fn set(&'a mut self, key: KeyType, val: ValueType) -> Result<()> {
+        bincode::serialize_into(&mut self.log, &key)?;
+        bincode::serialize_into(&mut self.log, &val)?;
         let active_size = self.active_memtable.size_bytes()?;
         let entry_size: u64 = match &val {
             Some(v) => v.len().try_into()?,
@@ -81,6 +98,7 @@ impl<'a> WriteStore<'a> for LSMTree {
         } + bincode::serialized_size(&key)?;
         if active_size + entry_size > self.config.lsm_tree_config.max_memtable_size_bytes {
             let curr = std::mem::take(&mut self.active_memtable);
+            self.log = Self::create_log()?;
             self.locked_memtables.push_back(curr.lock());
         }
         if self.locked_memtables.len() > self.config.lsm_tree_config.max_number_of_memtables {
