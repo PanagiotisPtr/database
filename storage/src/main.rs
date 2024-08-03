@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         },
     };
     let mut entry_count = 0;
-    let batch_size_bytes = 1 << 18;
+    let batch_size_bytes = 1 << 12;
     let mut entries: Vec<Entry> = vec![];
     println!("config: {:?}", config);
     println!("{:?} {:?}", entry_count, batch_size_bytes);
@@ -46,7 +46,8 @@ fn main() -> Result<()> {
     let words: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
     loop {
-        let key = words.choose(&mut rand::thread_rng()).unwrap().clone();
+        let mut key = words.choose(&mut rand::thread_rng()).unwrap().clone();
+        key.push_str(&words.choose(&mut rand::thread_rng()).unwrap().clone());
         let mut value = String::from("");
         for _ in 0..10 {
             let word = words.choose(&mut rand::thread_rng()).unwrap().clone();
@@ -73,6 +74,7 @@ fn main() -> Result<()> {
     let elapsed = now.elapsed();
     println!("Inserting time: {:.4?}", elapsed);
 
+    /*
     let mut count = 0;
     let now = Instant::now();
     for _ in 0..100 {
@@ -82,13 +84,22 @@ fn main() -> Result<()> {
     }
     let elapsed = now.elapsed();
     println!("100 scans time: {:.4?}", elapsed);
+    */
 
+    let mut count = 0;
+    for (_, _) in lsm_tree.scan(None).unwrap() {
+        count += 1;
+    }
+    println!("total items: {:?}", count);
+
+    /*
     let now = Instant::now();
     for key in entries_keys {
         lsm_tree.del(key)?;
     }
     let elapsed = now.elapsed();
     println!("Deleting time: {:.4?}", elapsed);
+    */
 
     Ok(())
 }

@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, fs::File, sync::Arc};
+use std::{
+    collections::VecDeque,
+    fs::{self, DirEntry, File},
+    io::{Seek, SeekFrom},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use commons::spec::{EntryIterator, KeyType, ReadStore, ValueType, WriteStore};
@@ -35,6 +40,29 @@ impl LSMTree {
         };
         tree.locked_memtables =
             VecDeque::with_capacity(tree.config.lsm_tree_config.max_number_of_memtables);
+
+        let sstable_files = Self::get_files_from_path("./data")?;
+        for sstable_file in sstable_files {
+            println!("loading file {:?}", sstable_file.path().file_name());
+            tree.sstables.push(SSTable::from_file(
+                Arc::new(tree.config.sstable_config.clone()),
+                &sstable_file,
+            )?);
+        }
+        let log_files = Self::get_files_from_path("./logs")?;
+        let log_file = log_files.get(log_files.len() - 2).unwrap();
+        println!("loading file {:?}", log_file.path().file_name());
+        let mut file = File::open(log_file.path())?;
+        let len = file.metadata()?.len();
+        loop {
+            let curr = file.seek(SeekFrom::Current(0))?;
+            if curr >= len {
+                break;
+            }
+            let key: KeyType = bincode::deserialize_from(&mut file)?;
+            let value: ValueType = bincode::deserialize_from(&mut file)?;
+            tree.set(key, value)?;
+        }
         Ok(tree)
     }
 
@@ -42,15 +70,27 @@ impl LSMTree {
         Self::new(Config::new_default())
     }
 
+    pub fn get_files_from_path(path: &str) -> Result<Vec<DirEntry>> {
+        let mut entries: Vec<_> = fs::read_dir(path)?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .collect();
+
+        entries.sort_by_key(|entry| entry.path().file_name().unwrap().to_owned());
+
+        Ok(entries)
+    }
+
     fn create_log() -> Result<File> {
-        let data_dir = "./logs";
-        let path = std::path::Path::new(data_dir);
+        let logs_dir = "./logs";
+        let path = std::path::Path::new(logs_dir);
         if !path.exists() {
-            std::fs::create_dir_all(data_dir)?;
+            std::fs::create_dir_all(logs_dir)?;
         }
         let ts = Timestamp::now(NoContext);
         let filename = Uuid::new_v7(ts).to_string() + ".log";
         let file_loc = path.join(filename.clone());
+        println!("creating log file {:?}", filename);
         Ok(File::create(&file_loc)?)
     }
 }
@@ -74,14 +114,19 @@ impl<'a> ReadStore<'a> for LSMTree {
     }
 
     fn scan(&'a mut self, key: Option<KeyType>) -> Result<EntryIterator<'a>> {
+        println!("============ SCAN ==============");
         let mut v: Vec<EntryIterator<'a>> = vec![];
+        println!("scanning active memtable");
         v.push(self.active_memtable.scan(key.clone())?);
         for table in self.locked_memtables.iter_mut() {
+            println!("scanning locked memtable");
             v.push(table.scan(key.clone())?);
         }
         for table in self.sstables.iter_mut() {
+            println!("scanning sstable");
             v.push(table.scan(key.clone())?);
         }
+        println!("================================");
 
         Ok(Box::new(LSMTreeIterator::new(v)))
     }
@@ -99,6 +144,14 @@ impl<'a> WriteStore<'a> for LSMTree {
         if active_size + entry_size > self.config.lsm_tree_config.max_memtable_size_bytes {
             let curr = std::mem::take(&mut self.active_memtable);
             self.log = Self::create_log()?;
+            let log_files = Self::get_files_from_path("./logs")?;
+            for idx in 0..log_files.len() - 1 {
+                println!(
+                    "deleting old log file {:?}",
+                    log_files.get(idx).unwrap().path().file_name()
+                );
+                fs::remove_file(log_files.get(idx).unwrap().path())?;
+            }
             self.locked_memtables.push_back(curr.lock());
         }
         if self.locked_memtables.len() > self.config.lsm_tree_config.max_number_of_memtables {

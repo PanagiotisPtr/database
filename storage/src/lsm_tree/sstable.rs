@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{DirEntry, File},
     io::{BufRead, Cursor, Read, Seek, SeekFrom},
+    os::unix::fs::MetadataExt,
     path::Path,
     sync::Arc,
 };
@@ -191,6 +192,39 @@ impl SSTable {
 
             #[cfg(test)]
             filename,
+        })
+    }
+
+    pub fn from_file(config: Arc<SSTableConfig>, entry: &DirEntry) -> Result<SSTable> {
+        let mut file = File::open(entry.path())?;
+        let mut header = Header::default();
+        let header_size = bincode::serialized_size(&header)?;
+        let start = file.metadata()?.len() - header_size;
+        file.seek(SeekFrom::Start(start))?;
+
+        header = bincode::deserialize_from(&mut file)?;
+        let mut buffer = vec![0u8; header.index_ptr.size.try_into()?];
+        file.seek(SeekFrom::Start(header.index_ptr.start))?;
+        file.read_exact(&mut buffer)?;
+
+        let index: BTreeMap<KeyType, Block> = bincode::deserialize(&buffer)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        println!("Number of items in index: {:?}", index.len());
+
+        Ok(SSTable {
+            config: Arc::clone(&config),
+            header,
+            index,
+            file,
+
+            #[cfg(test)]
+            filename: entry
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
         })
     }
 
