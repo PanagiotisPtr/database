@@ -22,7 +22,7 @@ fn main() -> Result<()> {
         .set_default("data_dir", "/var/database/data")?
         .add_source(ConfigFile::new("config.toml", FileFormat::Toml));
     let cfg = builder.build()?;
-    let config = Config {
+    let mut config = Config {
         lsm_tree_config: LSMTreeConfig {
             max_memtable_size_bytes: u64::try_from(cfg.get_int("max_memtable_size_bytes")?)?,
             max_number_of_memtables: usize::try_from(cfg.get_int("max_number_of_memtables")?)?,
@@ -32,8 +32,9 @@ fn main() -> Result<()> {
             sstable_block_size_bytes: u64::try_from(cfg.get_int("sstable_block_size_bytes")?)?,
         },
     };
+    config.sstable_config.sstable_block_size_bytes = 4096;
     let mut entry_count = 0;
-    let batch_size_bytes = 1 << 12;
+    let batch_size_bytes = 1 << 20;
     let mut entries: Vec<Entry> = vec![];
     println!("config: {:?}", config);
     println!("{:?} {:?}", entry_count, batch_size_bytes);
